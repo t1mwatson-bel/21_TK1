@@ -441,48 +441,57 @@ def check_predictions():
                 pass
 
         # Текущий догон
+        # Перебираем все догоны от 0 до текущего
         current_dogon = prediction.get("dogon", 0)
-
-        game_number = add_game_offset(target, current_dogon)
-        game = games_cache.get(game_number)
-
-        if not game:
-            continue
-
-        found = find_card_in_game(
-            game,
-            prediction["predicted_card"],
-        )
-
-        if found:
-
+        
+        won = False
+        found_card = None
+        win_dogon = None
+        
+        # Проверяем все догоны до текущего включительно
+        for dogon_index in range(0, DOGON_GAMES + 1):
+            
+            game_number = add_game_offset(target, dogon_index)
+            game = games_cache.get(game_number)
+            
+            if not game:
+                continue
+            
+            found = find_card_in_game(game, prediction["predicted_card"])
+            
+            if found:
+                won = True
+                found_card = found
+                win_dogon = dogon_index
+                break
+        
+        if won:
+            # Победа на догоне win_dogon
             prediction["status"] = "win"
-            prediction["result_game"] = game_number
-            prediction["found_card"] = found
+            prediction["result_game"] = add_game_offset(target, win_dogon)
+            prediction["found_card"] = found_card
+            prediction["dogon"] = win_dogon
             prediction["closed_at"] = now.isoformat()
-
-            telegram_edit(
-                prediction.get("message_id"),
-                make_result_message(prediction, "win", found),
-            )
-
-            apply_win(prediction, current_dogon, found)
-
-            print("", flush=True)
-            print(f"✅ ПРОГНОЗ ЗАШЁЛ #N{target}", flush=True)
-            print(
-                f"🎯 Карта: {prediction['predicted_card']}",
-                flush=True,
-            )
-            print(
-                f"🃏 Найдена: {found['card']} ({found['where']})",
-                flush=True,
-            )
-            print(f"🔄 Догон: Д{current_dogon}", flush=True)
-            print(f"🎰 Игра: #N{game_number}", flush=True)
-
+            
+            telegram_edit(...)
+            apply_win(prediction, win_dogon, found_card)
+            
             changed = True
             continue
+        
+        # Если все догоны проверены, но ни одного попадания — lose
+        if current_dogon >= DOGON_GAMES:
+            # lose
+            apply_lose(prediction, current_dogon)
+            prediction["status"] = "lose"
+            ...
+        
+        # Иначе — переходим на следующий догон
+        else:
+            next_dogon = current_dogon + 1
+            apply_lose(prediction, current_dogon)
+            prediction["dogon"] = next_dogon
+            changed = True
 
         # Не нашли — переходим на следующий догон
         if current_dogon < DOGON_GAMES:
