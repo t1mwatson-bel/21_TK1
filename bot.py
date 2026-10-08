@@ -78,12 +78,16 @@ if not CHANNEL_STATS:
 # ГЛОБАЛЬНЫЕ ДАННЫЕ
 # =====================================================================
 
-games_cache = {}
+games_cache = {}         # для СОЗДАНИЯ прогноза (быстро, по первым картам)
+finalized_games = {}     # для ПРОВЕРКИ результата (финализированные)
+pending_games = {}       # игры, ждущие финализации
+
 predictions = []
 
 last_cleanup_date = None
 
 PREDICTION_TIMEOUT_MINUTES = 20
+FINALIZE_WAIT_SECONDS = 30
 
 
 # =====================================================================
@@ -111,6 +115,8 @@ def should_cleanup_now(now=None):
 def cleanup_nightly():
 
     global games_cache
+    global finalized_games
+    global pending_games
     global predictions
     global last_cleanup_date
 
@@ -122,7 +128,18 @@ def cleanup_nightly():
     games_count = len(games_cache)
     games_cache.clear()
 
-    print(f"   🗑️ games_cache: удалено {games_count}", flush=True)
+    final_count = len(finalized_games)
+    finalized_games.clear()
+
+    pending_count = len(pending_games)
+    pending_games.clear()
+
+    print(
+        f"   🗑️ games_cache: {games_count}, "
+        f"finalized: {final_count}, "
+        f"pending: {pending_count}",
+        flush=True,
+    )
 
     last_cleanup_date = now.date()
 
@@ -229,28 +246,21 @@ def make_result_message(prediction, result, found_card=None):
 # =====================================================================
 
 def is_waiting_message(text):
-    """
-    Проверяет, является ли сообщение "Ожиданием игры".
-    Такие сообщения НЕ должны попадать в games_cache.
-    """
 
     if not text:
         return True
 
-    # Явные маркеры ожидания
     if "Ожидание" in text:
         return True
 
     if "⏳" in text:
         return True
 
-    # Если нет скобок с картами — тоже считаем "ожиданием"
     groups = re.findall(r"\(([^()]*)\)", text)
 
     if len(groups) < 2:
         return True
 
-    # Если в скобках нет карт
     card_pattern = re.compile(r"[2-9AJQK10][♠♣♦♥]")
 
     if not card_pattern.search(groups[0]):
@@ -267,11 +277,6 @@ def is_waiting_message(text):
 # =====================================================================
 
 def create_prediction(trigger_game):
-    """
-    Создаёт прогноз по новому алгоритму.
-
-    trigger_game — игра, где первая карта игрока = J/Q/K/A.
-    """
 
     if has_active_prediction():
         return None
@@ -286,7 +291,7 @@ def create_prediction(trigger_game):
 
     rank = trigger["rank"]
 
-    # Ищем игру триггер − 3 для масти
+    # Масть берём из игры триггер − 3 (тоже из games_cache)
     suit_game_number = add_game_offset(trigger_number, -3)
     suit_game = games_cache.get(suit_game_number)
 
@@ -301,11 +306,6 @@ def create_prediction(trigger_game):
     prediction_data = build_prediction_v2(trigger_game, suit_game)
 
     if not prediction_data:
-        print(
-            f"⚠️ Триггер #N{trigger_number}: "
-            f"не удалось построить прогноз",
-            flush=True,
-        )
         return None
 
     predicted_card = prediction_data["predicted_card"]
@@ -315,7 +315,6 @@ def create_prediction(trigger_game):
 
     target_number = add_game_offset(trigger_number, target_offset)
 
-    # Проверка дубля
     for old in predictions:
 
         if old.get("status") != "pending":
@@ -402,7 +401,6 @@ def send_prediction(prediction):
     prediction["message_id"] = message_id
     prediction["sent_at"] = datetime.now(MOSCOW_TZ).isoformat()
 
-    # Списываем ставку за Д0
     apply_dogon_bet(prediction, 0)
 
     save_predictions()
@@ -418,7 +416,48 @@ def send_prediction(prediction):
 
 
 # =====================================================================
-# ПРОВЕРКА ПРОГНОЗОВ
+# ФИНАЛИЗАЦИЯ ИГР
+# =====================================================================
+
+def finalize_pending_games():
+    """
+    Переносит игры из pending_games в finalized_games
+    через FINALIZE_WAIT_SECONDS секунд тишины.
+    """
+
+    now = time.time()
+    ready = []
+
+    for (game_number, info) in list(pending_games.items()):
+
+        last_update = info.get("last_update", info.get("first_seen", now))
+
+        if now - last_update >= FINALIZE_WAIT_SECONDS:
+            ready.append(game_number)
+
+    for game_number in ready:
+
+        info = pending_games.pop(game_number, None)
+
+        if not info:
+            continue
+
+        text = info.get("text", "")
+        game = parse_game_message(text)
+
+        if not game:
+            continue
+
+        finalized_games[game_number] = game
+
+        print(
+            f"✅ #N{game_number} → finalized",
+            flush=True,
+        )
+
+
+# =====================================================================
+# ПРОВЕРКА ПРОГНОЗОВ (только по finalized_games)
 # =====================================================================
 
 def check_predictions():
@@ -477,7 +516,7 @@ def check_predictions():
                 pass
 
         # ---------------------------------------------------------
-        # ПОИСК КАРТЫ ВО ВСЕХ ИГРАХ ДОГОНОВ
+        # ПОИСК КАРТЫ ТОЛЬКО В finalized_games
         # ---------------------------------------------------------
 
         current_dogon = prediction.get("dogon", 0)
@@ -486,14 +525,14 @@ def check_predictions():
         found_card = None
         win_dogon = None
 
-        # Перебираем все догоны от 0 до DOGON_GAMES
         for dogon_index in range(0, DOGON_GAMES + 1):
 
             game_number = add_game_offset(target, dogon_index)
-            game = games_cache.get(game_number)
+
+            # ВАЖНО: ищем только в финализированных играх
+            game = finalized_games.get(game_number)
 
             if not game:
-                # Игры ещё нет — пропускаем этот догон
                 continue
 
             found = find_card_in_game(
@@ -509,7 +548,6 @@ def check_predictions():
 
         if won:
 
-            # Победа!
             prediction["status"] = "win"
             prediction["result_game"] = add_game_offset(target, win_dogon)
             prediction["found_card"] = found_card
@@ -539,30 +577,39 @@ def check_predictions():
             continue
 
         # ---------------------------------------------------------
-        # КАРТА НЕ НАЙДЕНА
+        # ПРОВЕРЯЕМ: ВСЕ ЛИ ИГРЫ ДОГОНОВ ФИНАЛИЗИРОВАНЫ?
         # ---------------------------------------------------------
 
-        # Проверяем, все ли игры догонов уже доступны
-        all_games_available = True
+        all_finalized = True
 
         for dogon_index in range(0, DOGON_GAMES + 1):
+
             game_number = add_game_offset(target, dogon_index)
-            if game_number not in games_cache:
-                all_games_available = False
+
+            if game_number not in finalized_games:
+                all_finalized = False
                 break
 
-        if not all_games_available:
-            # Не все игры пришли — ждём
+        if not all_finalized:
+            # Ждём финализации всех игр
             continue
 
-        # Все игры пришли, но карты нет — LOSE
+        # Все игры финализированы — но карты нет → LOSE
         if current_dogon < DOGON_GAMES:
-            # Переходим на следующий догон
-            next_dogon = current_dogon + 1
-            apply_lose(prediction, current_dogon)
-            prediction["dogon"] = next_dogon
-            changed = True
 
+            next_dogon = current_dogon + 1
+
+            apply_lose(prediction, current_dogon)
+
+            prediction["dogon"] = next_dogon
+
+            print(
+                f"❌ Д{current_dogon} проиграл, "
+                f"переходим на Д{next_dogon}",
+                flush=True,
+            )
+
+            changed = True
             continue
 
         # Все догоны отработаны — окончательный LOSE
@@ -591,7 +638,6 @@ def check_predictions():
 
 def on_game_message(game_number, text, is_edited):
 
-    # Игнорируем "Ожидание" и сообщения без карт
     if is_waiting_message(text):
         return
 
@@ -603,10 +649,15 @@ def on_game_message(game_number, text, is_edited):
     if not game.get("player_cards") or not game.get("dealer_cards"):
         return
 
+    # Обновляем в games_cache — для СОЗДАНИЯ прогноза
     is_new = game_number not in games_cache
-
-    # Обновляем игру в кэше (важно: обновление сохраняется)
     games_cache[game_number] = game
+
+    # Обновляем в pending_games — для ФИНАЛИЗАЦИИ
+    pending_games[game_number] = {
+        "text": text,
+        "last_update": time.time(),
+    }
 
     if is_new:
         log_game(game)
@@ -629,6 +680,20 @@ def cleanup_games_cache():
 
     for number, _ in items[:-MAX_GAMES_CACHE]:
         del games_cache[number]
+
+
+def cleanup_finalized_games():
+
+    if len(finalized_games) <= MAX_GAMES_CACHE:
+        return
+
+    items = sorted(
+        finalized_games.items(),
+        key=lambda kv: kv[1].get("received_at", ""),
+    )
+
+    for number, _ in items[:-MAX_GAMES_CACHE]:
+        del finalized_games[number]
 
 
 def cleanup_predictions():
@@ -661,6 +726,7 @@ def main():
     print("💸 Ставок на прогноз: 2 (игрок + дилер)", flush=True)
     print(f"🔄 Догоны: Д0..Д{DOGON_GAMES}", flush=True)
     print(f"⏰ Таймаут → возврат: {PREDICTION_TIMEOUT_MINUTES} мин", flush=True)
+    print(f"⏳ Финализация игры: {FINALIZE_WAIT_SECONDS} сек", flush=True)
     print("==================================================", flush=True)
 
     delete_webhook()
@@ -687,8 +753,10 @@ def main():
                 on_game_message,
             )
 
+            finalize_pending_games()
             check_predictions()
             cleanup_games_cache()
+            cleanup_finalized_games()
             cleanup_predictions()
 
             time.sleep(POLL_INTERVAL)
