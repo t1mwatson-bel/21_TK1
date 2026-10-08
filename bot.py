@@ -26,12 +26,7 @@ from parsers import (
     add_game_offset,
     find_trigger_v2,
     build_prediction_v2,
-    get_first_player_rank,
-    get_first_player_suit,
     find_card_in_game,
-    normalize_suit,
-    card_to_text,
-    cards_to_text,
 )
 
 from coefs import get_dealer_cf, get_player_cf
@@ -55,14 +50,6 @@ from bank import (
     apply_lose,
     apply_return,
 )
-
-
-# =====================================================================
-# КОНСТАНТЫ ДОП. ПРОГНОЗА
-# =====================================================================
-
-EXTRA_TARGET_OFFSET = 40       # цель = триггер + 40
-EXTRA_SEND_BEFORE = 7          # отправка за 7 игр до цели
 
 
 # =====================================================================
@@ -183,14 +170,6 @@ def has_active_prediction():
     return False
 
 
-def has_active_extra_prediction():
-    """Проверяет, есть ли активный ДОПОЛНИТЕЛЬНЫЙ прогноз."""
-    for prediction in predictions:
-        if prediction.get("is_extra") and prediction.get("status") == "pending":
-            return True
-    return False
-
-
 # =====================================================================
 # ФОРМАТ СООБЩЕНИЙ
 # =====================================================================
@@ -200,9 +179,6 @@ def make_prediction_message(prediction):
     target = prediction["target_number"]
     card = prediction["predicted_card"]
 
-    if prediction.get("is_extra"):
-        return f"📌 Доп: <b>#N{target}</b>: {card}"
-
     return f"🎯 Игра: <b>#N{target}</b>: {card}"
 
 
@@ -210,10 +186,6 @@ def make_result_message(prediction, result, found_card=None):
 
     target = prediction["target_number"]
     card = prediction["predicted_card"]
-
-    is_extra = prediction.get("is_extra", False)
-
-    prefix = "📌 Доп:" if is_extra else "🎯 Игра:"
 
     if result == "win":
         where = found_card.get("where") if found_card else None
@@ -223,15 +195,15 @@ def make_result_message(prediction, result, found_card=None):
             where_text = " (игрок)"
         else:
             where_text = ""
-        return f"{prefix} <b>#N{target}</b>: {card} ✅{where_text}"
+        return f"🎯 Игра: <b>#N{target}</b>: {card} ✅{where_text}"
 
     elif result == "lose":
-        return f"{prefix} <b>#N{target}</b>: {card} ❌"
+        return f"🎯 Игра: <b>#N{target}</b>: {card} ❌"
 
     elif result == "return":
-        return f"{prefix} <b>#N{target}</b>: {card} ♻️"
+        return f"🎯 Игра: <b>#N{target}</b>: {card} ♻️"
 
-    return f"{prefix} <b>#N{target}</b>: {card} ⚠️"
+    return f"🎯 Игра: <b>#N{target}</b>: {card} ⚠️"
 
 
 # =====================================================================
@@ -257,15 +229,18 @@ def is_waiting_message(text):
 
 
 # =====================================================================
-# СОЗДАНИЕ ПРОГНОЗА
+# СОЗДАНИЕ ПРОГНОЗА (только основной)
 # =====================================================================
 
 def create_prediction(trigger_game):
     """
-    Создаёт ДВА прогноза от одного триггера:
-    - Основной: цель +2 (отправляется сразу)
-    - Доп: цель +40 (отправляется позже, за 7 игр до цели)
+    Создаёт ОСНОВНОЙ прогноз от триггера:
+    - Цель: триггер + 2
+    - Отправка: сразу
     """
+
+    if has_active_prediction():
+        return None
 
     trigger = find_trigger_v2(trigger_game)
 
@@ -298,148 +273,66 @@ def create_prediction(trigger_game):
     predicted_rank = prediction_data["predicted_rank"]
     predicted_suit = prediction_data["predicted_suit"]
 
-    base_bet = get_current_bet()
-
-    created_any = False
-
-    # =========================================================
-    # 1. ОСНОВНОЙ ПРОГНОЗ (цель +2)
-    # =========================================================
-
-    if not has_active_prediction():
-
-        main_target = add_game_offset(trigger_number, 2)
-
-        # Проверка дубля
-        is_dup = False
-        for old in predictions:
-            if old.get("status") != "pending":
-                continue
-            if (
-                old.get("target_number") == main_target
-                and old.get("predicted_card") == predicted_card
-                and not old.get("is_extra")
-            ):
-                is_dup = True
-                break
-
-        if not is_dup:
-
-            main_prediction = {
-                "algorithm": "first_player_card_v2",
-                "is_extra": False,
-
-                "trigger_number": trigger_number,
-                "trigger_game_id": trigger_id,
-                "trigger_card": trigger["trigger_card"],
-
-                "suit_game_number": suit_game_number,
-                "suit_card": cards_to_text([suit_game["player_cards"][0]]) if suit_game.get("player_cards") else None,
-
-                "predicted_rank": predicted_rank,
-                "predicted_suit": predicted_suit,
-                "predicted_card": predicted_card,
-
-                "target_offset": 2,
-                "target_number": main_target,
-
-                "base_bet": base_bet,
-
-                "status": "pending",
-                "dogon": 0,
-
-                "created_at": datetime.now(MOSCOW_TZ).isoformat(),
-                "sent_at": None,
-                "closed_at": None,
-                "message_id": None,
-                "result_game": None,
-                "found_card": None,
-                "close_reason": None,
-            }
-
-            predictions.append(main_prediction)
-            save_predictions()
-
-            print("", flush=True)
-            print("🔮 ОСНОВНОЙ ПРОГНОЗ СОЗДАН", flush=True)
-            print(f"📌 Триггер: #N{trigger_number}", flush=True)
-            print(f"🃏 Первая карта: {trigger['trigger_card']}", flush=True)
-            print(f"🎨 Масть из #N{suit_game_number}: {predicted_suit}", flush=True)
-            print(f"🎯 Прогноз: {predicted_card}", flush=True)
-            print(f"🎯 Цель: #N{main_target}", flush=True)
-
-            send_prediction(main_prediction)
-            created_any = True
-
-    # =========================================================
-    # 2. ДОПОЛНИТЕЛЬНЫЙ ПРОГНОЗ (цель +40, отправим позже)
-    # =========================================================
-
-    extra_target = add_game_offset(trigger_number, EXTRA_TARGET_OFFSET)
-    extra_send_game = add_game_offset(extra_target, -EXTRA_SEND_BEFORE)
+    main_target = add_game_offset(trigger_number, 2)
 
     # Проверка дубля
-    is_extra_dup = False
     for old in predictions:
-        if old.get("status") not in ("pending", "scheduled"):
+        if old.get("status") != "pending":
             continue
         if (
-            old.get("target_number") == extra_target
+            old.get("target_number") == main_target
             and old.get("predicted_card") == predicted_card
-            and old.get("is_extra")
         ):
-            is_extra_dup = True
-            break
+            return None
 
-    if not is_extra_dup:
+    base_bet = get_current_bet()
 
-        extra_prediction = {
-            "algorithm": "first_player_card_v2_extra",
-            "is_extra": True,
+    prediction = {
+        "algorithm": "first_player_card_v2",
 
-            "trigger_number": trigger_number,
-            "trigger_game_id": trigger_id,
-            "trigger_card": trigger["trigger_card"],
+        "trigger_number": trigger_number,
+        "trigger_game_id": trigger_id,
+        "trigger_card": trigger["trigger_card"],
 
-            "suit_game_number": suit_game_number,
-            "suit_card": cards_to_text([suit_game["player_cards"][0]]) if suit_game.get("player_cards") else None,
+        "suit_game_number": suit_game_number,
 
-            "predicted_rank": predicted_rank,
-            "predicted_suit": predicted_suit,
-            "predicted_card": predicted_card,
+        "predicted_rank": predicted_rank,
+        "predicted_suit": predicted_suit,
+        "predicted_card": predicted_card,
 
-            "target_offset": EXTRA_TARGET_OFFSET,
-            "target_number": extra_target,
+        "cf": get_dealer_cf(predicted_card),
 
-            "send_game_number": extra_send_game,
+        "target_offset": 2,
+        "target_number": main_target,
 
-            "base_bet": base_bet,
+        "base_bet": base_bet,
 
-            "status": "scheduled",
-            "dogon": 0,
+        "status": "pending",
+        "dogon": 0,
 
-            "created_at": datetime.now(MOSCOW_TZ).isoformat(),
-            "sent_at": None,
-            "closed_at": None,
-            "message_id": None,
-            "result_game": None,
-            "found_card": None,
-            "close_reason": None,
-        }
+        "created_at": datetime.now(MOSCOW_TZ).isoformat(),
+        "sent_at": None,
+        "closed_at": None,
+        "message_id": None,
+        "result_game": None,
+        "found_card": None,
+        "close_reason": None,
+    }
 
-        predictions.append(extra_prediction)
-        save_predictions()
+    predictions.append(prediction)
+    save_predictions()
 
-        print("", flush=True)
-        print("📌 ДОП. ПРОГНОЗ СОЗДАН (ожидает отправки)", flush=True)
-        print(f"📌 Триггер: #N{trigger_number}", flush=True)
-        print(f"🎯 Прогноз: {predicted_card}", flush=True)
-        print(f"🎯 Цель: #N{extra_target}", flush=True)
-        print(f"📤 Отправка при игре: #N{extra_send_game}", flush=True)
+    print("", flush=True)
+    print("🔮 ПРОГНОЗ СОЗДАН", flush=True)
+    print(f"📌 Триггер: #N{trigger_number}", flush=True)
+    print(f"🃏 Первая карта: {trigger['trigger_card']}", flush=True)
+    print(f"🎨 Масть из #N{suit_game_number}: {predicted_suit}", flush=True)
+    print(f"🎯 Прогноз: {predicted_card}", flush=True)
+    print(f"🎯 Цель: #N{main_target}", flush=True)
 
-        created_any = True
+    send_prediction(prediction)
 
-    return created_any
+    return prediction
 
 
 # =====================================================================
@@ -467,50 +360,14 @@ def send_prediction(prediction):
 
     save_predictions()
 
-    prefix = "📌 ДОП. " if prediction.get("is_extra") else ""
     print(
-        f"📤 {prefix}ПРОГНОЗ ОТПРАВЛЕН: "
+        f"📤 ПРОГНОЗ ОТПРАВЛЕН: "
         f"#N{prediction['target_number']} "
         f"{prediction['predicted_card']}",
         flush=True,
     )
 
     return True
-
-
-# =====================================================================
-# ОТПРАВКА ЗАПЛАНИРОВАННЫХ ДОП. ПРОГНОЗОВ
-# =====================================================================
-
-def send_scheduled_predictions():
-
-    changed = False
-
-    for prediction in predictions:
-
-        if prediction.get("status") != "scheduled":
-            continue
-
-        send_game = prediction.get("send_game_number")
-
-        if not send_game:
-            continue
-
-        # Проверяем, пришла ли игра для отправки
-        if send_game in finalized_games or send_game in games_cache:
-
-            print(
-                f"📤 Отправка доп. прогноза "
-                f"#N{prediction['target_number']} "
-                f"(игра #N{send_game} пришла)",
-                flush=True,
-            )
-
-            if send_prediction(prediction):
-                changed = True
-
-    if changed:
-        save_predictions()
 
 
 # =====================================================================
@@ -633,9 +490,8 @@ def check_predictions():
 
             apply_win(prediction, win_dogon, found_card)
 
-            prefix = "📌 ДОП. " if prediction.get("is_extra") else ""
             print("", flush=True)
-            print(f"✅ {prefix}ПРОГНОЗ ЗАШЁЛ #N{target}", flush=True)
+            print(f"✅ ПРОГНОЗ ЗАШЁЛ #N{target}", flush=True)
             print(f"🎯 Карта: {prediction['predicted_card']}", flush=True)
             print(f"🃏 Найдена: {found_card['card']} ({found_card['where']})", flush=True)
             print(f"🔄 Догон: Д{win_dogon}", flush=True)
@@ -684,9 +540,8 @@ def check_predictions():
             make_result_message(prediction, "lose"),
         )
 
-        prefix = "📌 ДОП. " if prediction.get("is_extra") else ""
         print("", flush=True)
-        print(f"❌ {prefix}ПРОГНОЗ НЕ ЗАШЁЛ #N{target}", flush=True)
+        print(f"❌ ПРОГНОЗ НЕ ЗАШЁЛ #N{target}", flush=True)
 
         changed = True
 
@@ -767,14 +622,13 @@ def main():
 
     print("", flush=True)
     print("==================================================", flush=True)
-    print("🚀 CYBER 21 — FIRST CARD PREDICTOR v2 + EXTRA", flush=True)
+    print("🚀 CYBER 21 — FIRST CARD PREDICTOR v2", flush=True)
     print("==================================================", flush=True)
     print("📡 Игры: CHANNEL_STATS", flush=True)
     print("📤 Прогнозы: CHANNEL_PROGNOZ", flush=True)
     print("🎯 Алгоритм: первая карта игрока J/Q/K/A", flush=True)
     print("🎯 Масть: от игры триггер − 3", flush=True)
-    print("🎯 Основной: цель +2", flush=True)
-    print(f"📌 Доп: цель +{EXTRA_TARGET_OFFSET} (отправка за {EXTRA_SEND_BEFORE} игр)", flush=True)
+    print("🎯 Цель: +2", flush=True)
     print("💸 Ставок на прогноз: 2 (игрок + дилер)", flush=True)
     print(f"🔄 Догоны: Д0..Д{DOGON_GAMES}", flush=True)
     print(f"⏰ Таймаут → возврат: {PREDICTION_TIMEOUT_MINUTES} мин", flush=True)
@@ -806,7 +660,6 @@ def main():
             )
 
             finalize_pending_games()
-            send_scheduled_predictions()
             check_predictions()
             cleanup_games_cache()
             cleanup_finalized_games()
