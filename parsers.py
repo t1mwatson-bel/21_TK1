@@ -173,6 +173,9 @@ def parse_game_message(text):
     is_draw = bool(re.search(r"#X\b", text))
     is_ochko = bool(re.search(r"#O\b", text))
 
+    # Игра завершена (есть ✅)
+    is_finished = bool(re.search(r"✅", text))
+
     return {
         "game_number": game_number,
         "game_id": game_id,
@@ -185,6 +188,7 @@ def parse_game_message(text):
 
         "is_draw": is_draw,
         "is_ochko": is_ochko,
+        "is_finished": is_finished,
 
         "raw_text": text,
 
@@ -221,6 +225,9 @@ def log_game(game):
     if game.get("is_ochko"):
         print("⭕ #O — ОЧКО", flush=True)
 
+    if game.get("is_finished"):
+        print("✅ — ИГРА ЗАВЕРШЕНА", flush=True)
+
     print("────────────────────────────────────", flush=True)
 
 
@@ -237,67 +244,60 @@ def add_game_offset(number, offset):
 # =====================================================================
 
 def get_first_player_card(game):
-    """
-    Возвращает первую карту игрока (dict с rank и suit).
-    Если карт нет — None.
-    """
-
     player = game.get("player_cards", [])
-
     if not player:
         return None
-
     return player[0]
 
 
 def get_first_player_rank(game):
-    """
-    Возвращает ранг первой карты игрока (например, "Q").
-    Если карт нет — None.
-    """
-
     card = get_first_player_card(game)
-
     if not card:
         return None
-
     return normalize_rank(card.get("rank"))
 
 
 def get_first_player_suit(game):
-    """
-    Возвращает масть первой карты игрока (например, "♠️").
-    Если карт нет — None.
-    """
-
     card = get_first_player_card(game)
-
     if not card:
         return None
-
     return normalize_suit(card.get("suit"))
 
 
 # =====================================================================
-# НОВЫЙ ТРИГГЕР (v2): первая карта игрока = J/Q/K/A
+# НОВЫЙ ТРИГГЕР (v2)
 # =====================================================================
 
 def find_trigger_v2(game):
     """
     НОВЫЙ АЛГОРИТМ (v2):
 
-    Триггер: первая карта игрока — J/Q/K/A.
+    Триггер срабатывает ТОЛЬКО если:
+        1. Игра ЗАВЕРШЕНА (есть ✅).
+        2. У игрока РОВНО 3 карты.
+        3. Первая карта игрока = J/Q/K/A.
 
     Возвращает:
         {
-            "trigger_card": "Q♦️",   # первая карта игрока
-            "rank": "Q",               # ранг (для прогноза)
-            "target_offset": 2,        # всегда +2
+            "trigger_card": "Q♦️",
+            "rank": "Q",
+            "target_offset": 2,
         }
 
     Если триггера нет — None.
     """
 
+    # 1. Игра должна быть завершена (✅)
+    if not game.get("is_finished"):
+        return None
+
+    # 2. У игрока должно быть РОВНО 3 карты
+    player = game.get("player_cards", [])
+
+    if len(player) != 3:
+        return None
+
+    # 3. Первая карта игрока = J/Q/K/A
     first_rank = get_first_player_rank(game)
 
     if not first_rank:
@@ -316,37 +316,18 @@ def find_trigger_v2(game):
 
 
 # =====================================================================
-# ПОСТРОЕНИЕ ПРОГНОЗА (v2): rank от триггера + suit от триггер-3
+# ПОСТРОЕНИЕ ПРОГНОЗА (v2)
 # =====================================================================
 
 def build_prediction_v2(trigger_game, suit_game):
-    """
-    Строит прогноз по новому алгоритму.
-
-    trigger_game — игра, где сработал триггер (первая карта J/Q/K/A).
-    suit_game    — игра (триггер − 3), откуда берём масть.
-
-    Возвращает:
-        {
-            "predicted_card": "Q♠️",
-            "predicted_rank": "Q",
-            "predicted_suit": "♠️",
-            "target_offset": 2,
-        }
-
-    Если что-то не так — None.
-    """
-
     if not trigger_game or not suit_game:
         return None
 
-    # Ранг — от триггерной игры
     rank = get_first_player_rank(trigger_game)
 
     if rank not in {"J", "Q", "K", "A"}:
         return None
 
-    # Масть — от игры триггер − 3
     suit = get_first_player_suit(suit_game)
 
     if not suit:
@@ -367,15 +348,6 @@ def build_prediction_v2(trigger_game, suit_game):
 # =====================================================================
 
 def find_card_in_game(game, target_card):
-    """
-    Ищет КОНКРЕТНУЮ карту и у игрока, и у дилера.
-
-    Возвращает:
-        {"card": "K♦️", "where": "player"} или
-        {"card": "K♦️", "where": "dealer"} или
-        None
-    """
-
     if not target_card:
         return None
 
