@@ -15,10 +15,12 @@ from config import (
 # РЕГУЛЯРКА ДЛЯ КАРТ
 # =====================================================================
 
+# Ловим масть в любом виде: ♠, ♠️, ♠\ufe0f, ♠️\ufe0f
+SUIT_PATTERN = r"[♠♣♦♥][\ufe0f]?"
+
 CARD_RE = re.compile(
     r"(10|[2-9AJQK])"
-    r"(♠|♣|♦|♥)"
-    r"\ufe0f?"
+    r"(" + SUIT_PATTERN + r")"
 )
 
 
@@ -31,11 +33,10 @@ def normalize_suit(suit):
         return None
 
     value = str(suit).strip()
+    value = value.replace("\ufe0f", "")
 
     if value in SUIT_ALIASES:
         return SUIT_ALIASES[value]
-
-    value = value.replace("\ufe0f", "")
 
     return SUITS.get(value)
 
@@ -270,28 +271,17 @@ def get_first_player_suit(game):
 
 def find_trigger_v2(game):
     """
-    НОВЫЙ АЛГОРИТМ (v2):
-
     Триггер срабатывает ТОЛЬКО если:
         1. Игра ЗАВЕРШЕНА (есть ✅).
         2. У игрока РОВНО 3 карты.
         3. Первая карта игрока = J/Q/K/A.
-
-    Возвращает:
-        {
-            "trigger_card": "Q♦️",
-            "rank": "Q",
-            "target_offset": 2,
-        }
-
-    Если триггера нет — None.
     """
 
-    # 1. Игра должна быть завершена (✅)
+    # 1. Игра должна быть завершена
     if not game.get("is_finished"):
         return None
 
-    # 2. У игрока должно быть РОВНО 3 карты
+    # 2. У игрока РОВНО 3 карты
     player = game.get("player_cards", [])
 
     if len(player) != 3:
@@ -352,7 +342,7 @@ def find_card_in_game(game, target_card):
         return None
 
     target_rank_match = re.match(
-        r"(10|[2-9AJQK])(♠️|♣️|♦️|♥️)$",
+        r"(10|[2-9AJQK])(" + SUIT_PATTERN + r")$",
         target_card,
     )
 
