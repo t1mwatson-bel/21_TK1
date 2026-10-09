@@ -576,7 +576,10 @@ def on_game_message(game_number, text, is_edited):
 
     if is_new:
         log_game(game)
-        create_prediction(game)
+
+    # ВСЕГДА пробуем создать прогноз
+    # (create_prediction сам проверит триггер и 3 карты)
+    create_prediction(game)
 
 
 # =====================================================================
