@@ -135,66 +135,80 @@ def parse_cards(text):
 # ПАРСИНГ ИГРЫ
 # =====================================================================
 
+
 def parse_game_message(text):
     """
-    Разбирает сообщение вида:
-    #N1247. 23(10♠K♥9♥) - ✅18(A♣7♥) #T41 (ID: 759233499)
+    Разбирает всю раздачу игрока и дилера.
+    Пример:
+    #N794. ✅19(K♣️J♥️Q♦️10♣️) - 22(K♠️7♦️A♠️) #T41 (ID: 759976646)
     """
 
     if not text:
         return None
 
     number_match = re.search(r"#N(\d+)", text)
-
     if not number_match:
         return None
 
     game_number = int(number_match.group(1))
 
-    groups = re.findall(r"\(([^()]*)\)", text)
+    # Находим группы карт с очками перед открывающей скобкой.
+    # Не захватываем ID и другие служебные скобки.
+    groups = re.findall(
+        r"(?:✅\s*|❌\s*|[-–]\s*)?(\d+)\s*\(([^()]*)\)",
+        text
+    )
 
+    # В сообщении должны присутствовать обе руки.
     if len(groups) < 2:
         return None
 
-    player_text = groups[0]
-    dealer_text = groups[1]
+    player_score_text, player_text = groups[0]
+    dealer_score_text, dealer_text = groups[1]
 
+    # Извлекаем ВСЕ карты из каждой руки.
     player_cards = parse_cards(player_text)
     dealer_cards = parse_cards(dealer_text)
 
     if not player_cards:
         return None
 
+    # Считаем очки по всем найденным картам.
     player_score = cyber21_score(player_cards)
     dealer_score = cyber21_score(dealer_cards)
 
-    id_match = re.search(r"ID:\s*(\d+)", text)
+    id_match = re.search(r"\bID:\s*(\d+)", text)
     game_id = id_match.group(1) if id_match else None
 
     is_draw = bool(re.search(r"#X\b", text))
     is_ochko = bool(re.search(r"#O\b", text))
-
-    # Игра завершена (есть ✅)
     is_finished = bool(re.search(r"✅", text))
 
-    return {
+    game = {
         "game_number": game_number,
         "game_id": game_id,
-
         "player_cards": player_cards,
         "dealer_cards": dealer_cards,
-
         "player_score": player_score,
         "dealer_score": dealer_score,
-
         "is_draw": is_draw,
         "is_ochko": is_ochko,
         "is_finished": is_finished,
-
         "raw_text": text,
-
         "received_at": datetime.now(MOSCOW_TZ).isoformat(),
     }
+
+    # Диагностика: сразу видно, сколько карт распознано.
+    print(
+        f"🔎 Парсер #N{game_number}: "
+        f"игрок {len(player_cards)} карт "
+        f"({cards_to_text(player_cards)}); "
+        f"дилер {len(dealer_cards)} карт "
+        f"({cards_to_text(dealer_cards)})",
+        flush=True,
+    )
+
+    return game
 
 
 # =====================================================================
