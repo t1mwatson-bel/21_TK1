@@ -15,7 +15,6 @@ from config import (
 # РЕГУЛЯРКА ДЛЯ КАРТ
 # =====================================================================
 
-# Ловим масть в любом виде: ♠, ♠️, ♠\ufe0f, ♠️\ufe0f
 SUIT_PATTERN = r"[♠♣♦♥][\ufe0f]?"
 
 CARD_RE = re.compile(
@@ -135,70 +134,47 @@ def parse_cards(text):
 # ПАРСИНГ ИГРЫ
 # =====================================================================
 
-
 def parse_game_message(text):
     """
-    Разбирает всю раздачу игрока и дилера.
-    Пример:
-    #N794. ✅19(K♣️J♥️Q♦️10♣️) - 22(K♠️7♦️A♠️) #T41 (ID: 759976646)
+    Разбирает сообщение вида:
+    #N1247. 23(10♠K♥9♥) - ✅18(A♣7♥) #T41 (ID: 759233499)
     """
 
     if not text:
         return None
 
     number_match = re.search(r"#N(\d+)", text)
+
     if not number_match:
         return None
 
     game_number = int(number_match.group(1))
 
-    # Находим группы карт с очками перед открывающей скобкой.
-    # Не захватываем ID и другие служебные скобки.
-    groups = re.findall(
-        r"(?:✅\s*|❌\s*|[-–]\s*)?(\d+)\s*\(([^()]*)\)",
-        text
-    )
+    groups = re.findall(r"\(([^()]*)\)", text)
 
-    # В сообщении должны присутствовать обе руки.
     if len(groups) < 2:
         return None
 
-    player_score_text, player_text = groups[0]
-    dealer_score_text, dealer_text = groups[1]
+    player_text = groups[0]
+    dealer_text = groups[1]
 
-    # Извлекаем ВСЕ карты из каждой руки.
     player_cards = parse_cards(player_text)
     dealer_cards = parse_cards(dealer_text)
 
     if not player_cards:
         return None
 
-    # Считаем очки по всем найденным картам.
     player_score = cyber21_score(player_cards)
     dealer_score = cyber21_score(dealer_cards)
 
-    id_match = re.search(r"\bID:\s*(\d+)", text)
+    id_match = re.search(r"ID:\s*(\d+)", text)
     game_id = id_match.group(1) if id_match else None
 
     is_draw = bool(re.search(r"#X\b", text))
     is_ochko = bool(re.search(r"#O\b", text))
     is_finished = bool(re.search(r"✅", text))
 
-    game = {
-        "game_number": game_number,
-        "game_id": game_id,
-        "player_cards": player_cards,
-        "dealer_cards": dealer_cards,
-        "player_score": player_score,
-        "dealer_score": dealer_score,
-        "is_draw": is_draw,
-        "is_ochko": is_ochko,
-        "is_finished": is_finished,
-        "raw_text": text,
-        "received_at": datetime.now(MOSCOW_TZ).isoformat(),
-    }
-
-    # Диагностика: сразу видно, сколько карт распознано.
+    # ЛОГ КАРТ
     print(
         f"🔎 Парсер #N{game_number}: "
         f"игрок {len(player_cards)} карт "
@@ -208,7 +184,24 @@ def parse_game_message(text):
         flush=True,
     )
 
-    return game
+    return {
+        "game_number": game_number,
+        "game_id": game_id,
+
+        "player_cards": player_cards,
+        "dealer_cards": dealer_cards,
+
+        "player_score": player_score,
+        "dealer_score": dealer_score,
+
+        "is_draw": is_draw,
+        "is_ochko": is_ochko,
+        "is_finished": is_finished,
+
+        "raw_text": text,
+
+        "received_at": datetime.now(MOSCOW_TZ).isoformat(),
+    }
 
 
 # =====================================================================
@@ -291,17 +284,14 @@ def find_trigger_v2(game):
         3. Первая карта игрока = J/Q/K/A.
     """
 
-    # 1. Игра должна быть завершена
     if not game.get("is_finished"):
         return None
 
-    # 2. У игрока РОВНО 3 карты
     player = game.get("player_cards", [])
 
     if len(player) != 3:
         return None
 
-    # 3. Первая карта игрока = J/Q/K/A
     first_rank = get_first_player_rank(game)
 
     if not first_rank:
@@ -369,7 +359,6 @@ def find_card_in_game(game, target_card):
     if not target_suit:
         return None
 
-    # Ищем у игрока
     for card in game.get("player_cards", []):
 
         rank = normalize_rank(card.get("rank"))
@@ -381,7 +370,6 @@ def find_card_in_game(game, target_card):
                 "where": "player",
             }
 
-    # Ищем у дилера
     for card in game.get("dealer_cards", []):
 
         rank = normalize_rank(card.get("rank"))
