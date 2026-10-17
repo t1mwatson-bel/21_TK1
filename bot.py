@@ -56,7 +56,7 @@ from bank import (
 # =====================================================================
 
 PUBLISH_OFFSET = 2
-PREDICTION_TIMEOUT_MINUTES = 30
+PREDICTION_TIMEOUT_MINUTES = 300
 FINALIZE_WAIT_SECONDS = 30
 PENDING_CHECK_TIMEOUT_MINUTES = 5
 
