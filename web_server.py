@@ -35,17 +35,9 @@ def load_predictions():
     try:
         with open(PREDICTIONS_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-
         if isinstance(data, list):
             return data
-
-        if isinstance(data, dict):
-            if isinstance(data.get("predictions"), list):
-                return data["predictions"]
-            return []
-
         return []
-
     except Exception as e:
         print(f"Ошибка чтения {PREDICTIONS_FILE}: {e}")
         return []
@@ -56,33 +48,11 @@ def load_predictions():
 # ============================================================
 
 def get_result(prediction):
-
-    result = prediction.get("result")
-
-    if result is not None:
-        result = str(result).lower().strip()
-
-        if result in ("hit", "win", "won", "success", "зашло", "yes"):
-            return "hit"
-
-        if result in ("miss", "lose", "lost", "не зашло", "no"):
-            return "miss"
-
-        if result in ("pending", "wait", "waiting"):
-            return "pending"
-
     status = str(prediction.get("status", "")).lower().strip()
-
-    if status in ("hit", "win", "won"):
+    if status in ("win", "hit", "won"):
         return "hit"
-
-    if status in ("miss", "lose", "lost"):
+    if status in ("lose", "miss", "lost"):
         return "miss"
-
-    # pending / active / waiting / pending_check / cancelled → pending
-    if status in ("pending", "active", "waiting", "pending_check", "cancelled"):
-        return "pending"
-
     return "pending"
 
 
@@ -114,19 +84,17 @@ def get_target_offset(prediction):
 
 def get_cf(prediction):
     """Возвращает коэффициент (только игрок — 21)."""
-
     cf_player = prediction.get("cf_player")
-
-    if cf_player:
-        return {"player": float(cf_player)}
-
+    if cf_player is not None:
+        try:
+            return {"player": float(cf_player)}
+        except (ValueError, TypeError):
+            return None
     return None
 
 
 def calc_stats(predictions):
-
     completed = []
-
     for p in predictions:
         result = get_result(p)
         if result in ("hit", "miss"):
@@ -147,16 +115,13 @@ def calc_stats(predictions):
 
 
 def group_stats(predictions, key_function):
-
     groups = {}
-
     for prediction in predictions:
         result = get_result(prediction)
         if result not in ("hit", "miss"):
             continue
 
         key = key_function(prediction)
-
         if key not in groups:
             groups[key] = {"total": 0, "hits": 0, "misses": 0}
 
@@ -174,20 +139,13 @@ def group_stats(predictions, key_function):
 
 
 def calculate_streak(predictions):
-
-    completed = []
-
-    for p in predictions:
-        result = get_result(p)
-        if result in ("hit", "miss"):
-            completed.append(result)
+    completed = [get_result(p) for p in predictions if get_result(p) in ("hit", "miss")]
 
     if not completed:
         return {"type": "none", "count": 0}
 
     last = completed[-1]
     count = 0
-
     for result in reversed(completed):
         if result == last:
             count += 1
@@ -198,7 +156,6 @@ def calculate_streak(predictions):
 
 
 def calculate_max_streak(predictions):
-
     max_hit = 0
     max_miss = 0
     current_hit = 0
@@ -206,7 +163,6 @@ def calculate_max_streak(predictions):
 
     for p in predictions:
         result = get_result(p)
-
         if result == "hit":
             current_hit += 1
             current_miss = 0
@@ -249,14 +205,11 @@ def api_bank_history():
 
 @app.route("/api/stats")
 def api_stats():
-
     predictions = load_predictions()
-
     overall = calc_stats(predictions)
 
-    # Догоны
+    # Догоны (от 0 до 3, так как это старый бот с 4 догонами)
     dogon_groups = group_stats(predictions, lambda p: get_dogon(p))
-
     dogon_stats = []
     for dogon in range(4):
         data = dogon_groups.get(dogon, {"total": 0, "hits": 0, "misses": 0, "accuracy": 0})
@@ -264,11 +217,7 @@ def api_stats():
 
     # Ранги
     rank_groups = group_stats(predictions, lambda p: get_rank(p))
-
-    ranks = []
-    for rank, data in rank_groups.items():
-        ranks.append({"rank": rank, **data})
-
+    ranks = [{"rank": rank, **data} for rank, data in rank_groups.items()]
     ranks.sort(key=lambda x: x["accuracy"], reverse=True)
 
     # Rolling
@@ -280,10 +229,7 @@ def api_stats():
         hits = sum(1 for p in subset if get_result(p) == "hit")
         accuracy = (hits / total * 100) if total else 0
         return {
-            "total": total,
-            "hits": hits,
-            "misses": total - hits,
-            "accuracy": round(accuracy, 2),
+            "total": total, "hits": hits, "misses": total - hits, "accuracy": round(accuracy, 2),
         }
 
     rolling = {
@@ -348,7 +294,6 @@ def health():
 # ============================================================
 
 def start_web_server():
-
     print("=" * 60)
     print("21 — RANK STATISTICS")
     print("=" * 60)
@@ -360,7 +305,6 @@ def start_web_server():
 
     t = threading.Thread(target=_run, daemon=True)
     t.start()
-
     print(f"🌐 Web-server запущен на порту {PORT}", flush=True)
     return t
 
