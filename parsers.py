@@ -245,7 +245,7 @@ def add_game_offset(number, offset):
 
 
 # =====================================================================
-# ПОЛУЧЕНИЕ ПЕРВОЙ КАРТЫ
+# ПОЛУЧЕНИЕ КАРТ ИГРОКА
 # =====================================================================
 
 def get_first_player_card(game):
@@ -262,59 +262,89 @@ def get_first_player_rank(game):
     return normalize_rank(card.get("rank"))
 
 
+def get_last_player_card(game):
+    player = game.get("player_cards", [])
+    if not player:
+        return None
+    return player[-1]
+
+
+def get_last_player_rank(game):
+    card = get_last_player_card(game)
+    if not card:
+        return None
+    return normalize_rank(card.get("rank"))
+
+
 # =====================================================================
-# ТРИГГЕР 21
+# ТРИГГЕР 21 КЛАССИК
 # =====================================================================
 
-def find_trigger_21(game):
+TRIGGER_FIRST_RANKS = {"6", "7", "8", "9"}   # первая карта игрока
+TRIGGER_LAST_RANKS  = {"J", "Q", "K", "A"}   # последняя карта игрока
+
+# Очки старших карт — ТОЛЬКО для расчёта сдвига
+LAST_RANK_POINTS = {
+    "J": 2,
+    "Q": 3,
+    "K": 4,
+    "A": 11,
+}
+
+
+def find_trigger_21_classic(game):
     """
-    Триггер в 21.
-    Условия:
-        1. Игра ЗАВЕРШЕНА (✅).
-        2. У игрока ОТ 3 ДО 5 карт.
-        3. У дилера РОВНО 0 карт.
-        4. Нет #O (очко).
-        5. Первая карта — J, Q, K или A.
+    Триггер 21 КЛАССИК.
 
-    Прогноз: РАНГ первой карты.
-    Сдвиг: +10 (база) + (кол-во карт * 10).
+    Условия:
+        1. Игра завершена (✅).
+        2. Первая карта игрока — 6, 7, 8 или 9.
+        3. Последняя карта игрока — J, Q, K или A.
+
+    Сдвиг:
+        offset      = LAST_RANK_POINTS[последняя_карта] + 1
+        target_game = game_number + offset
+
+    Прогноз:
+        На целевой игре у ИГРОКА (в любой позиции д0–д3)
+        должен встретиться ранг ПЕРВОЙ карты триггера.
     """
 
     # 1. Игра завершена
     if not game.get("is_finished"):
         return None
 
-    # 2. У игрока 3-5 карт
     player = game.get("player_cards", [])
 
-    if len(player) < 3 or len(player) > 5:
+    if not player:
         return None
 
-    # 3. У дилера 0 карт
-    dealer = game.get("dealer_cards", [])
+    # 2. Первая карта — 6..9
+    first_rank = normalize_rank(player[0].get("rank"))
 
-    if len(dealer) != 0:
+    if first_rank not in TRIGGER_FIRST_RANKS:
         return None
 
-    # 4. Нет очка
-    if game.get("is_ochko"):
+    # 3. Последняя карта — J/Q/K/A
+    last_rank = normalize_rank(player[-1].get("rank"))
+
+    if last_rank not in TRIGGER_LAST_RANKS:
         return None
 
-    # 5. Первая карта — J/Q/K/A
-    first_rank = get_first_player_rank(game)
-
-    if first_rank not in TRIGGER_RANKS:
-        return None
-
-    first_card = get_first_player_card(game)
-
-    # Плавающий сдвиг
-    offset = 10 + (len(player) * 10)
+    # Сдвиг
+    offset = LAST_RANK_POINTS[last_rank] + 1
 
     return {
-        "trigger_card": card_to_text(first_card),
+        "trigger_card": card_to_text(player[0]),
+        "last_card":    card_to_text(player[-1]),
+
         "predicted_rank": first_rank,
+
         "target_offset": offset,
+        "target_game":   add_game_offset(
+            game["game_number"],
+            offset,
+        ),
     }
 
 
@@ -324,7 +354,8 @@ def find_trigger_21(game):
 
 def find_rank_in_player(game, target_rank):
     """
-    Ищет карту с нужным РАНГОМ (любая масть) ТОЛЬКО у игрока.
+    Ищет карту с нужным РАНГОМ (любая масть)
+    ТОЛЬКО у игрока — в любой позиции (д0, д1, д2, д3).
     """
 
     if not target_rank:
@@ -335,14 +366,15 @@ def find_rank_in_player(game, target_rank):
     if not target_rank:
         return None
 
-    for card in game.get("player_cards", []):
+    for index, card in enumerate(game.get("player_cards", [])):
 
         rank = normalize_rank(card.get("rank"))
 
         if rank == target_rank:
             return {
-                "card": card_to_text(card),
+                "card":  card_to_text(card),
                 "where": "player",
+                "index": index,   # 0 = д0, 1 = д1, ...
             }
 
     return None
