@@ -378,3 +378,6 @@ def find_rank_in_player(game, target_rank):
             }
 
     return None
+    
+    # Алиас для обратной совместимости
+find_trigger_21 = find_trigger_21_classic
