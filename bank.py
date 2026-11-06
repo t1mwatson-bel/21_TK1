@@ -9,6 +9,7 @@ from config import (
     START_BET,
     BET_MULTIPLIER,
     COEFFICIENT,
+    DOGON_GAMES,
     MOSCOW_TZ,
 )
 
@@ -30,8 +31,6 @@ bank_state = {
 # =====================================================================
 
 def load_bank():
-    """Загружает состояние банка из файла."""
-
     global bank_state
 
     try:
@@ -66,16 +65,11 @@ def load_bank():
 
 
 def save_bank():
-    """Сохраняет состояние банка в файл."""
-
     try:
         tmp = BANK_FILE + ".tmp"
-
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(bank_state, f, ensure_ascii=False, indent=2)
-
         os.replace(tmp, BANK_FILE)
-
     except Exception as e:
         print(f"⚠️ Ошибка сохранения банка: {e}", flush=True)
 
@@ -93,50 +87,37 @@ def get_current_bet():
 
 
 # =====================================================================
-# ЛОГИКА СЕРИИ
+# СТАВКИ ДОГОНОВ
 # =====================================================================
-# Правила:
-#   WIN            → сброс current_bet = START_BET (50)
-#   RETURN (♻️)    → сброс current_bet = START_BET (50)
-#   LOSE (4 игры)  → current_bet *= BET_MULTIPLIER (2.5)
-#
-# Догон (Д0–Д3) внутри прогноза считается отдельно, в bot.py.
 
 def bet_for_dogon(base_bet, dogon_index):
-    """
-    Считает ставку для конкретного догона.
-    dogon_index: 0 = Д0, 1 = Д1, 2 = Д2, 3 = Д3.
-    """
-
+    """Ставка на догоне: base_bet × 2.5^dogon."""
     return round(base_bet * (BET_MULTIPLIER ** dogon_index), 2)
 
 
 # =====================================================================
-# ПРИМЕНЕНИЕ РЕЗУЛЬТАТА ПРОГНОЗА
+# РЕЗУЛЬТАТЫ ПРОГНОЗА
 # =====================================================================
 
 def apply_win(prediction, dogon_index, bet_amount):
     """
-    Прогноз выиграл.
-    Списываем все проигранные догоны до win, начисляем выплату,
-    сбрасываем current_bet на START_BET.
+    WIN на догоне `dogon_index`.
+    bet_amount = ставка на ЭТОМ догоне (= base_bet × 2.5^dogon).
+    Проигранные до него догоны списываем из баланса.
     """
-
+    base_bet = prediction.get("base_bet", get_current_bet())
     payout = round(bet_amount * COEFFICIENT, 2)
 
-    # Если win был не на Д0 — все предыдущие догоны были проиграны
-    total_lost = 0.0
-    for i in range(dogon_index):
-        total_lost += bet_for_dogon(bet_amount, i) if False else bet_for_dogon(
-            get_current_bet(), i
-        )
+    # Проигранные догоны Д0..Д(dogon_index-1) — считаем от base_bet
+    total_lost = sum(
+        bet_for_dogon(base_bet, i) for i in range(dogon_index)
+    )
 
-    # Профит = payout - ставка - все проигранные догоны до этого
+    # Профит = выплата - ставка победившего догона - все проигранные до него
     profit = round(payout - bet_amount - total_lost, 2)
 
     bank_state["balance"] = round(
-        bank_state["balance"] + payout - bet_amount - total_lost,
-        2,
+        bank_state["balance"] + payout - bet_amount - total_lost, 2
     )
     bank_state["current_bet"] = START_BET
 
@@ -146,6 +127,7 @@ def apply_win(prediction, dogon_index, bet_amount):
         "suit": prediction.get("predicted_suit"),
         "dogon": dogon_index,
         "bet": bet_amount,
+        "total_lost_before": total_lost,
         "payout": payout,
         "profit": profit,
         "balance_after": bank_state["balance"],
@@ -160,30 +142,29 @@ def apply_win(prediction, dogon_index, bet_amount):
         f"(профит {profit} ₽) | баланс {bank_state['balance']} ₽",
         flush=True,
     )
-
     return record
 
 
 def apply_lose(prediction, bet_amount):
     """
-    Прогноз проиграл (все 4 игры).
-    Умножаем current_bet на 2.5 для следующего прогноза.
+    LOSE (все Д0..Д3 проиграны).
+    bet_amount = base_bet (ставка Д0).
+    Списываем СУММУ всех догонов, следующая базовая ставка = base × 2.5^4.
     """
-
-    total_lost = 0.0
-    for i in range(4):  # Д0 + 3 догона
-        total_lost += bet_for_dogon(bet_amount, i)
+    base_bet = bet_amount
+    total_lost = sum(
+        bet_for_dogon(base_bet, i) for i in range(DOGON_GAMES + 1)
+    )
 
     bank_state["balance"] = round(bank_state["balance"] - total_lost, 2)
-
-    new_bet = round(bet_amount * (BET_MULTIPLIER ** 4), 2)
+    new_bet = round(base_bet * (BET_MULTIPLIER ** (DOGON_GAMES + 1)), 2)
     bank_state["current_bet"] = new_bet
 
     record = {
         "type": "lose",
         "game_number": prediction.get("target_number"),
         "suit": prediction.get("predicted_suit"),
-        "bet": bet_amount,
+        "bet": base_bet,
         "total_lost": total_lost,
         "next_bet": new_bet,
         "balance_after": bank_state["balance"],
@@ -199,16 +180,14 @@ def apply_lose(prediction, bet_amount):
         f"баланс {bank_state['balance']} ₽",
         flush=True,
     )
-
     return record
 
 
 def apply_return(prediction, bet_amount):
     """
-    Возврат ♻️ (таймаут >30 мин).
-    Ставка сбрасывается на START_BET, баланс не меняется.
+    RETURN ♻️ (таймаут).
+    Баланс не меняется, current_bet сбрасывается на START_BET.
     """
-
     bank_state["current_bet"] = START_BET
 
     record = {
@@ -228,17 +207,14 @@ def apply_return(prediction, bet_amount):
         f"баланс {bank_state['balance']} ₽",
         flush=True,
     )
-
     return record
 
 
 # =====================================================================
-# СТАТИСТИКА БАНКА (для сайта)
+# СТАТИСТИКА ДЛЯ САЙТА
 # =====================================================================
 
 def get_bank_summary():
-    """Возвращает сводку по банку для сайта."""
-
     balance = bank_state["balance"]
     profit = round(balance - START_BALANCE, 2)
     roi = round((profit / START_BALANCE) * 100, 2) if START_BALANCE else 0.0
