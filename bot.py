@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, time as dtime
 from config import (
     BOT_TOKEN, CHANNEL_PROGNOZ, CHANNEL_STATS,
     PREDICTIONS_FILE, POLL_INTERVAL, FINALIZE_WAIT_SECONDS,
-    DOGON_GAMES, PREDICTION_TIMEOUT_MINUTES,
+    DOGON_GAMES, SEND_BEFORE_TARGET, PREDICTION_TIMEOUT_MINUTES,
     CLEANUP_HOUR, CLEANUP_MINUTE,
     MAX_GAMES_CACHE, MAX_PREDICTIONS_STORED, MOSCOW_TZ,
 )
@@ -115,24 +115,29 @@ def make_result_message(p, result):
     return f"🎯 Игра: <b>#N{p['target_number']}</b>: {suit}{mark}"
 
 # =====================================================================
+# АКТИВНЫЙ ПРОГНОЗ
+# =====================================================================
+
+def has_active_prediction():
+    for p in predictions:
+        if p.get("status") == "pending":
+            return True
+    return False
+
+# =====================================================================
 # СОЗДАНИЕ ПРОГНОЗА
 # =====================================================================
 
 def create_prediction(game):
+    if has_active_prediction():
+        return None
+
     trigger = find_trigger(game)
     if not trigger:
         return None
 
     target = trigger["target_number"]
     suit = trigger["predicted_suit"]
-
-    # защита от дублей — только по той же цели+масти
-    for old in predictions:
-        if old.get("status") == "pending" and \
-           old.get("target_number") == target and \
-           old.get("predicted_suit") == suit:
-            return None
-
     base_bet = get_current_bet()
 
     prediction = {
@@ -143,6 +148,7 @@ def create_prediction(game):
         "target_number": target,
         "predicted_suit": suit,
         "target_offset": target - trigger["trigger_number"],
+        "send_at_game": target - SEND_BEFORE_TARGET,
         "dogon": 0,
         "base_bet": base_bet,
         "bet": base_bet,
@@ -159,8 +165,9 @@ def create_prediction(game):
     predictions.append(prediction)
     save_predictions()
 
-    print(f"\n🔮 ПРОГНОЗ: #N{target} {suit} (триггер #N{trigger['trigger_number']} {trigger['trigger_card']})", flush=True)
-    send_prediction(prediction)
+    print(f"\n🔮 ПРОГНОЗ: #N{target} {suit} "
+          f"(триггер #N{trigger['trigger_number']} {trigger['trigger_card']}, "
+          f"отправка от #N{prediction['send_at_game']})", flush=True)
     return prediction
 
 def send_prediction(p):
@@ -171,7 +178,35 @@ def send_prediction(p):
     p["message_id"] = mid
     p["sent_at"] = datetime.now(MOSCOW_TZ).isoformat()
     save_predictions()
+    print(f"📤 ОТПРАВЛЕН #N{p['target_number']} {p['predicted_suit']}", flush=True)
     return True
+
+# =====================================================================
+# ОТЛОЖЕННАЯ ОТПРАВКА
+# =====================================================================
+
+def try_send_pending():
+    changed = False
+
+    for p in predictions:
+        if p.get("status") != "pending":
+            continue
+        if p.get("message_id"):
+            continue
+
+        send_at = p.get("send_at_game")
+        if send_at is None:
+            continue
+
+        # ждём появления игры send_at или более поздней
+        if not any(n >= send_at for n in games_cache):
+            continue
+
+        if send_prediction(p):
+            changed = True
+
+    if changed:
+        save_predictions()
 
 # =====================================================================
 # ПРОВЕРКА ПРОГНОЗОВ
@@ -189,18 +224,19 @@ def check_predictions():
         if not target:
             continue
 
-        # Таймаут
-        sent_at_str = p.get("sent_at")
-        if sent_at_str:
+        # Таймаут 20 мин от создания
+        created_at_str = p.get("created_at")
+        if created_at_str:
             try:
-                sent_at = datetime.fromisoformat(sent_at_str)
-                if now - sent_at > timedelta(minutes=PREDICTION_TIMEOUT_MINUTES):
+                created_at = datetime.fromisoformat(created_at_str)
+                if now - created_at > timedelta(minutes=PREDICTION_TIMEOUT_MINUTES):
                     p["status"] = "return"
                     p["close_reason"] = "timeout"
                     p["closed_at"] = now.isoformat()
-                    telegram_edit(p.get("message_id"), make_result_message(p, "return"))
+                    if p.get("message_id"):
+                        telegram_edit(p.get("message_id"), make_result_message(p, "return"))
                     apply_return(p, p.get("bet", 0))
-                    print(f"♻️ RETURN #N{target}", flush=True)
+                    print(f"♻️ RETURN #N{target} (timeout {PREDICTION_TIMEOUT_MINUTES} мин)", flush=True)
                     changed = True
                     continue
             except Exception:
@@ -228,7 +264,8 @@ def check_predictions():
                 p["dogon"] = dogon
                 p["bet"] = bet
                 p["closed_at"] = now.isoformat()
-                telegram_edit(p.get("message_id"), make_result_message(p, "win"))
+                if p.get("message_id"):
+                    telegram_edit(p.get("message_id"), make_result_message(p, "win"))
                 apply_win(p, dogon, bet)
                 print(f"✅ WIN #N{target} на Д{dogon} ({card})", flush=True)
                 changed = True
@@ -238,14 +275,14 @@ def check_predictions():
         if won or waiting:
             continue
 
-        # LOSE — сумма всех догонов
         total = sum(bet_for_dogon(base_bet, d) for d in range(0, DOGON_GAMES + 1))
         p["status"] = "lose"
         p["result_game"] = checked[-1] if checked else add_game_offset(target, DOGON_GAMES)
         p["dogon"] = DOGON_GAMES
         p["bet"] = total
         p["closed_at"] = now.isoformat()
-        telegram_edit(p.get("message_id"), make_result_message(p, "lose"))
+        if p.get("message_id"):
+            telegram_edit(p.get("message_id"), make_result_message(p, "lose"))
         apply_lose(p, total)
         print(f"❌ LOSE #N{target} (-{total})", flush=True)
         changed = True
@@ -319,8 +356,10 @@ def main():
     print("==================================================", flush=True)
     print(f"🎯 Триггер: 1-я карта игрока → масть", flush=True)
     print(f"📍 Отступ до цели: +10 игр", flush=True)
+    print(f"📤 Отправка за {SEND_BEFORE_TARGET} игр до цели", flush=True)
     print(f"🔄 Догоны: Д0..Д{DOGON_GAMES}", flush=True)
-    print(f"⏰ Таймаут: {PREDICTION_TIMEOUT_MINUTES} мин", flush=True)
+    print(f"⏰ Таймаут: {PREDICTION_TIMEOUT_MINUTES} мин от создания", flush=True)
+    print(f"🔒 Один активный прогноз", flush=True)
     print("==================================================", flush=True)
 
     delete_webhook()
@@ -337,6 +376,7 @@ def main():
                 cleanup_nightly()
             offset = process_telegram_updates(offset, on_game_message)
             finalize_pending_games()
+            try_send_pending()
             check_predictions()
             cleanup_games_cache()
             cleanup_predictions()
@@ -349,7 +389,7 @@ def main():
             time.sleep(3)
 
 # =====================================================================
-# СТАРТ: бот в фоне, сайт в главном потоке
+# СТАРТ
 # =====================================================================
 
 if __name__ == "__main__":
