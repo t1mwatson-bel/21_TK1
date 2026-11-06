@@ -1,253 +1,83 @@
 import os
 import json
-
 from datetime import datetime
 
 from config import (
-    BANK_FILE,
-    START_BALANCE,
-    START_BET,
-    BET_MULTIPLIER,
-    COEFFICIENT,
-    MOSCOW_TZ,
+    BANK_FILE, START_BALANCE, START_BET,
+    BET_MULTIPLIER, COEFFICIENT, MOSCOW_TZ,
 )
 
+_bank = None
 
-# =====================================================================
-# СОСТОЯНИЕ БАНКА (в памяти)
-# =====================================================================
-
-bank_state = {
-    "balance": START_BALANCE,
-    "current_bet": START_BET,
-    "started_at": None,
-    "history": [],
-}
-
-
-# =====================================================================
-# ЗАГРУЗКА / СОХРАНЕНИЕ
-# =====================================================================
+def _default_bank():
+    return {
+        "balance": START_BALANCE,
+        "current_bet": START_BET,
+        "lose_streak": 0,
+        "wins": 0,
+        "loses": 0,
+        "returns": 0,
+        "updated_at": datetime.now(MOSCOW_TZ).isoformat(),
+    }
 
 def load_bank():
-    """Загружает состояние банка из файла."""
-
-    global bank_state
-
+    global _bank
     try:
-        if not os.path.exists(BANK_FILE):
-            bank_state = {
-                "balance": START_BALANCE,
-                "current_bet": START_BET,
-                "started_at": datetime.now(MOSCOW_TZ).isoformat(),
-                "history": [],
-            }
-            save_bank()
-            return
-
-        with open(BANK_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-
-        bank_state = {
-            "balance": float(data.get("balance", START_BALANCE)),
-            "current_bet": float(data.get("current_bet", START_BET)),
-            "started_at": data.get("started_at"),
-            "history": data.get("history", []),
-        }
-
+        if os.path.exists(BANK_FILE):
+            with open(BANK_FILE, "r", encoding="utf-8") as f:
+                _bank = json.load(f)
+        else:
+            _bank = _default_bank()
     except Exception as e:
-        print(f"⚠️ Ошибка чтения банка: {e}", flush=True)
-        bank_state = {
-            "balance": START_BALANCE,
-            "current_bet": START_BET,
-            "started_at": datetime.now(MOSCOW_TZ).isoformat(),
-            "history": [],
-        }
-
+        print(f"⚠️ Ошибка чтения {BANK_FILE}: {e}", flush=True)
+        _bank = _default_bank()
+    return _bank
 
 def save_bank():
-    """Сохраняет состояние банка в файл."""
-
     try:
         tmp = BANK_FILE + ".tmp"
-
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(bank_state, f, ensure_ascii=False, indent=2)
-
+            json.dump(_bank, f, ensure_ascii=False, indent=2)
         os.replace(tmp, BANK_FILE)
-
     except Exception as e:
-        print(f"⚠️ Ошибка сохранения банка: {e}", flush=True)
-
-
-# =====================================================================
-# ГЕТТЕРЫ
-# =====================================================================
-
-def get_balance():
-    return float(bank_state["balance"])
-
+        print(f"🔥 Ошибка сохранения {BANK_FILE}: {e}", flush=True)
 
 def get_current_bet():
-    return float(bank_state["current_bet"])
+    if _bank is None:
+        load_bank()
+    return float(_bank.get("current_bet", START_BET))
 
+def bet_for_dogon(base_bet, dogon):
+    return round(base_bet * (BET_MULTIPLIER ** dogon), 2)
 
-# =====================================================================
-# ЛОГИКА СЕРИИ
-# =====================================================================
-# Правила:
-#   WIN            → сброс current_bet = START_BET (50)
-#   RETURN (♻️)    → сброс current_bet = START_BET (50)
-#   LOSE (4 игры)  → current_bet *= BET_MULTIPLIER (2.5)
-#
-# Догон (Д0–Д3) внутри прогноза считается отдельно, в bot.py.
-
-def bet_for_dogon(base_bet, dogon_index):
-    """
-    Считает ставку для конкретного догона.
-    dogon_index: 0 = Д0, 1 = Д1, 2 = Д2, 3 = Д3.
-    """
-
-    return round(base_bet * (BET_MULTIPLIER ** dogon_index), 2)
-
-
-# =====================================================================
-# ПРИМЕНЕНИЕ РЕЗУЛЬТАТА ПРОГНОЗА
-# =====================================================================
-
-def apply_win(prediction, dogon_index, bet_amount):
-    """
-    Прогноз выиграл.
-    Списываем все проигранные догоны до win, начисляем выплату,
-    сбрасываем current_bet на START_BET.
-    """
-
-    payout = round(bet_amount * COEFFICIENT, 2)
-
-    # Если win был не на Д0 — все предыдущие догоны были проиграны
-    total_lost = 0.0
-    for i in range(dogon_index):
-        total_lost += bet_for_dogon(bet_amount, i) if False else bet_for_dogon(
-            get_current_bet(), i
-        )
-
-    # Профит = payout - ставка - все проигранные догоны до этого
-    profit = round(payout - bet_amount - total_lost, 2)
-
-    bank_state["balance"] = round(
-        bank_state["balance"] + payout - bet_amount - total_lost,
-        2,
-    )
-    bank_state["current_bet"] = START_BET
-
-    record = {
-        "type": "win",
-        "game_number": prediction.get("target_number"),
-        "suit": prediction.get("predicted_suit"),
-        "dogon": dogon_index,
-        "bet": bet_amount,
-        "payout": payout,
-        "profit": profit,
-        "balance_after": bank_state["balance"],
-        "at": datetime.now(MOSCOW_TZ).isoformat(),
-    }
-
-    bank_state["history"].append(record)
+def apply_win(prediction, dogon, bet_amount):
+    if _bank is None:
+        load_bank()
+    profit = round(bet_amount * (COEFFICIENT - 1), 2)
+    _bank["balance"] = round(_bank["balance"] + profit, 2)
+    _bank["current_bet"] = START_BET
+    _bank["lose_streak"] = 0
+    _bank["wins"] = _bank.get("wins", 0) + 1
+    _bank["updated_at"] = datetime.now(MOSCOW_TZ).isoformat()
     save_bank()
+    print(f"💰 WIN Д{dogon}: +{profit} | баланс {_bank['balance']}", flush=True)
 
-    print(
-        f"💰 WIN: ставка {bet_amount} ₽ → выплата {payout} ₽ "
-        f"(профит {profit} ₽) | баланс {bank_state['balance']} ₽",
-        flush=True,
-    )
-
-    return record
-
-
-def apply_lose(prediction, bet_amount):
-    """
-    Прогноз проиграл (все 4 игры).
-    Умножаем current_bet на 2.5 для следующего прогноза.
-    """
-
-    total_lost = 0.0
-    for i in range(4):  # Д0 + 3 догона
-        total_lost += bet_for_dogon(bet_amount, i)
-
-    bank_state["balance"] = round(bank_state["balance"] - total_lost, 2)
-
-    new_bet = round(bet_amount * (BET_MULTIPLIER ** 4), 2)
-    bank_state["current_bet"] = new_bet
-
-    record = {
-        "type": "lose",
-        "game_number": prediction.get("target_number"),
-        "suit": prediction.get("predicted_suit"),
-        "bet": bet_amount,
-        "total_lost": total_lost,
-        "next_bet": new_bet,
-        "balance_after": bank_state["balance"],
-        "at": datetime.now(MOSCOW_TZ).isoformat(),
-    }
-
-    bank_state["history"].append(record)
+def apply_lose(prediction, total_bet):
+    """Списывает СУММУ всех догонов (Д0..Д3), а не base_bet."""
+    if _bank is None:
+        load_bank()
+    _bank["balance"] = round(_bank["balance"] - total_bet, 2)
+    _bank["lose_streak"] = _bank.get("lose_streak", 0) + 1
+    _bank["current_bet"] = round(_bank.get("current_bet", START_BET) * BET_MULTIPLIER, 2)
+    _bank["loses"] = _bank.get("loses", 0) + 1
+    _bank["updated_at"] = datetime.now(MOSCOW_TZ).isoformat()
     save_bank()
-
-    print(
-        f"❌ LOSE: потеряно {total_lost} ₽ | "
-        f"следующая ставка {new_bet} ₽ | "
-        f"баланс {bank_state['balance']} ₽",
-        flush=True,
-    )
-
-    return record
-
+    print(f"💸 LOSE: -{total_bet} | баланс {_bank['balance']}", flush=True)
 
 def apply_return(prediction, bet_amount):
-    """
-    Возврат ♻️ (таймаут >30 мин).
-    Ставка сбрасывается на START_BET, баланс не меняется.
-    """
-
-    bank_state["current_bet"] = START_BET
-
-    record = {
-        "type": "return",
-        "game_number": prediction.get("target_number"),
-        "suit": prediction.get("predicted_suit"),
-        "bet": bet_amount,
-        "balance_after": bank_state["balance"],
-        "at": datetime.now(MOSCOW_TZ).isoformat(),
-    }
-
-    bank_state["history"].append(record)
+    if _bank is None:
+        load_bank()
+    _bank["returns"] = _bank.get("returns", 0) + 1
+    _bank["updated_at"] = datetime.now(MOSCOW_TZ).isoformat()
     save_bank()
-
-    print(
-        f"♻️ ВОЗВРАТ: ставка сброшена на {START_BET} ₽ | "
-        f"баланс {bank_state['balance']} ₽",
-        flush=True,
-    )
-
-    return record
-
-
-# =====================================================================
-# СТАТИСТИКА БАНКА (для сайта)
-# =====================================================================
-
-def get_bank_summary():
-    """Возвращает сводку по банку для сайта."""
-
-    balance = bank_state["balance"]
-    profit = round(balance - START_BALANCE, 2)
-    roi = round((profit / START_BALANCE) * 100, 2) if START_BALANCE else 0.0
-
-    return {
-        "balance": balance,
-        "start_balance": START_BALANCE,
-        "profit": profit,
-        "roi": roi,
-        "current_bet": bank_state["current_bet"],
-        "started_at": bank_state.get("started_at"),
-    }
+    print(f"♻️ RETURN: ставка {bet_amount} возвращена", flush=True)
