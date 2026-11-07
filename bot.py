@@ -275,16 +275,40 @@ def check_predictions():
         if won or waiting:
             continue
 
-        total = sum(bet_for_dogon(base_bet, d) for d in range(0, DOGON_GAMES + 1))
+                total = sum(
+            bet_for_dogon(base_bet, d)
+            for d in range(0, DOGON_GAMES + 1)
+        )
+
+        # Ставка именно на последнем догоне
+        last_bet = bet_for_dogon(base_bet, DOGON_GAMES)
+
         p["status"] = "lose"
         p["result_game"] = checked[-1] if checked else add_game_offset(target, DOGON_GAMES)
         p["dogon"] = DOGON_GAMES
-        p["bet"] = total
+
+        # Для истории прогноза сохраняем ставку последнего догона,
+        # а не общую сумму всей серии
+        p["bet"] = last_bet
+        p["total_lost"] = total
+
         p["closed_at"] = now.isoformat()
+
         if p.get("message_id"):
-            telegram_edit(p.get("message_id"), make_result_message(p, "lose"))
-        apply_lose(p, total)
-        print(f"❌ LOSE #N{target} (-{total})", flush=True)
+            telegram_edit(
+                p.get("message_id"),
+                make_result_message(p, "lose")
+            )
+
+        # ВАЖНО: передаём базовую ставку Д0
+        apply_lose(p, base_bet)
+
+        print(
+            f"❌ LOSE #N{target} "
+            f"(потеря серии {total} ₽, последний догон {last_bet} ₽)",
+            flush=True
+        )
+
         changed = True
 
     if changed:
