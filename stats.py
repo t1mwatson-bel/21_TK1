@@ -1,23 +1,19 @@
+# -*- coding: utf-8 -*-
+
 from datetime import datetime
 
 from config import (
-    START_BALANCE,
     MOSCOW_TZ,
 )
 
 from bank import get_bank_summary
 
 
-# =====================================================================
-# БАЗОВАЯ СВОДКА ПО ПРОГНОЗАМ
-# =====================================================================
+# ============================================================
+# ОБЩАЯ СТАТИСТИКА
+# ============================================================
 
 def get_predictions_summary(predictions):
-    """
-    Возвращает общую сводку:
-      total, wins, loses, returns, pending,
-      winrate, profit, roi
-    """
 
     total = 0
     wins = 0
@@ -26,24 +22,29 @@ def get_predictions_summary(predictions):
     pending = 0
 
     for p in predictions:
+
         status = p.get("status")
 
         if status == "win":
             total += 1
             wins += 1
+
         elif status == "lose":
             total += 1
             loses += 1
+
         elif status in ("return", "void", "expired"):
             returns += 1
+
         elif status == "pending":
             pending += 1
 
-    winrate = round((wins / total) * 100, 1) if total else 0.0
+    winrate = (
+        round(wins / total * 100, 1)
+        if total else 0.0
+    )
 
     bank = get_bank_summary()
-    profit = bank["profit"]
-    roi = bank["roi"]
 
     return {
         "total": total,
@@ -52,23 +53,19 @@ def get_predictions_summary(predictions):
         "returns": returns,
         "pending": pending,
         "winrate": winrate,
-        "profit": profit,
-        "roi": roi,
+        "profit": bank["profit"],
+        "roi": bank["roi"],
         "balance": bank["balance"],
         "start_balance": bank["start_balance"],
         "current_bet": bank["current_bet"],
     }
 
 
-# =====================================================================
-# ПО ДОГОНАМ
-# =====================================================================
+# ============================================================
+# СТАТИСТИКА ПО ДОГОНАМ
+# ============================================================
 
 def get_dogon_stats(predictions):
-    """
-    Разбивка по догонам Д0–Д3.
-    Возвращает список словарей: dogon, played, wins, winrate.
-    """
 
     stats = {
         0: {"played": 0, "wins": 0},
@@ -78,24 +75,43 @@ def get_dogon_stats(predictions):
     }
 
     for p in predictions:
+
         status = p.get("status")
 
         if status == "win":
-            dogon = p.get("dogon")
-            if dogon in stats:
-                stats[dogon]["played"] += 1
-                stats[dogon]["wins"] += 1
+
+            try:
+                dogon = int(p.get("dogon", 0))
+            except (TypeError, ValueError):
+                continue
+
+            if dogon not in stats:
+                continue
+
+            # Все попытки до выигрышного догона сыграны
+            for d in range(dogon + 1):
+                stats[d]["played"] += 1
+
+            # Выигрыш засчитываем на конкретном догоне
+            stats[dogon]["wins"] += 1
+
         elif status == "lose":
-            # Проигрыш — все 4 догона сыграны, но win нет
+
+            # Проигранная серия прошла все четыре догона
             for d in stats:
                 stats[d]["played"] += 1
 
     result = []
 
-    for dogon in sorted(stats.keys()):
+    for dogon in sorted(stats):
+
         played = stats[dogon]["played"]
         wins = stats[dogon]["wins"]
-        winrate = round((wins / played) * 100, 1) if played else 0.0
+
+        winrate = (
+            round(wins / played * 100, 1)
+            if played else 0.0
+        )
 
         result.append({
             "dogon": f"Д{dogon}",
@@ -107,15 +123,11 @@ def get_dogon_stats(predictions):
     return result
 
 
-# =====================================================================
-# ПО МАСТЯМ
-# =====================================================================
+# ============================================================
+# СТАТИСТИКА ПО МАСТЯМ
+# ============================================================
 
 def get_suit_stats(predictions):
-    """
-    Разбивка по мастям: ♠️ ♥️ ♦️ ♣️.
-    Возвращает список: suit, total, wins, winrate.
-    """
 
     stats = {
         "♠️": {"total": 0, "wins": 0},
@@ -125,6 +137,7 @@ def get_suit_stats(predictions):
     }
 
     for p in predictions:
+
         status = p.get("status")
         suit = p.get("predicted_suit")
 
@@ -132,6 +145,7 @@ def get_suit_stats(predictions):
             continue
 
         if status in ("win", "lose"):
+
             stats[suit]["total"] += 1
 
             if status == "win":
@@ -140,9 +154,14 @@ def get_suit_stats(predictions):
     result = []
 
     for suit in ["♦️", "♣️", "♠️", "♥️"]:
+
         total = stats[suit]["total"]
         wins = stats[suit]["wins"]
-        winrate = round((wins / total) * 100, 1) if total else 0.0
+
+        winrate = (
+            round(wins / total * 100, 1)
+            if total else 0.0
+        )
 
         result.append({
             "suit": suit,
@@ -154,18 +173,16 @@ def get_suit_stats(predictions):
     return result
 
 
-# =====================================================================
-# ПО ДНЯМ
-# =====================================================================
+# ============================================================
+# СТАТИСТИКА ПО ДНЯМ
+# ============================================================
 
 def get_daily_stats(predictions, limit_days=30):
-    """
-    Разбивка по дням: дата, всего, плюсов, минусов, winrate.
-    """
 
     by_date = {}
 
     for p in predictions:
+
         status = p.get("status")
 
         if status not in ("win", "lose"):
@@ -183,7 +200,12 @@ def get_daily_stats(predictions, limit_days=30):
             continue
 
         if day not in by_date:
-            by_date[day] = {"total": 0, "wins": 0, "loses": 0}
+
+            by_date[day] = {
+                "total": 0,
+                "wins": 0,
+                "loses": 0,
+            }
 
         by_date[day]["total"] += 1
 
@@ -192,15 +214,23 @@ def get_daily_stats(predictions, limit_days=30):
         else:
             by_date[day]["loses"] += 1
 
-    days = sorted(by_date.keys(), reverse=True)[:limit_days]
+    days = sorted(
+        by_date.keys(),
+        reverse=True
+    )[:limit_days]
 
     result = []
 
     for day in days:
+
         data = by_date[day]
         total = data["total"]
         wins = data["wins"]
-        winrate = round((wins / total) * 100, 1) if total else 0.0
+
+        winrate = (
+            round(wins / total * 100, 1)
+            if total else 0.0
+        )
 
         result.append({
             "date": day,
@@ -213,18 +243,16 @@ def get_daily_stats(predictions, limit_days=30):
     return result
 
 
-# =====================================================================
-# ПОСЛЕДНИЕ N ПРОГНОЗОВ
-# =====================================================================
+# ============================================================
+# ПОСЛЕДНИЕ ПРОГНОЗЫ
+# ============================================================
 
 def get_last_predictions(predictions, limit=30):
-    """
-    Возвращает последние N прогнозов в удобном для сайта формате.
-    """
 
     result = []
 
     for p in predictions[-limit:][::-1]:
+
         result.append({
             "target": p.get("target_number"),
             "trigger": p.get("trigger_number"),
@@ -239,14 +267,11 @@ def get_last_predictions(predictions, limit=30):
     return result
 
 
-# =====================================================================
-# ПОЛНЫЙ ПАКЕТ ДЛЯ САЙТА
-# =====================================================================
+# ============================================================
+# ПОЛНАЯ СТАТИСТИКА ДЛЯ САЙТА
+# ============================================================
 
 def get_full_stats(predictions):
-    """
-    Возвращает всё, что нужно сайту одним словарём.
-    """
 
     return {
         "summary": get_predictions_summary(predictions),
